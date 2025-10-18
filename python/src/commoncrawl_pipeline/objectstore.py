@@ -45,6 +45,7 @@ class MinIOObjectStore(ObjectStore):
         secret_key: str,
         bucket_name: str,
         secure: bool = False,
+        buffer_size_mb: int = 5,
     ) -> None:
         """Initialize MinIO object store.
 
@@ -54,6 +55,7 @@ class MinIOObjectStore(ObjectStore):
             secret_key: Secret key
             bucket_name: Bucket name
             secure: Use HTTPS (default: False for local MinIO)
+            buffer_size_mb: Buffer size in megabytes before flushing (default: 5)
         """
         self.bucket_name = bucket_name
         self.client = Minio(
@@ -65,7 +67,7 @@ class MinIOObjectStore(ObjectStore):
         # Buffer for batching writes
         self.buffer: list[str] = []
         self.buffer_size_bytes = 0
-        self.max_buffer_size_bytes = 5 * 1024 * 1024  # 5MB buffer
+        self.max_buffer_size_bytes = buffer_size_mb * 1024 * 1024  # Convert MB to bytes
         self.current_file_key = self._generate_file_key()
 
     def _generate_file_key(self) -> str:

@@ -1,16 +1,23 @@
 import io
 import json
+import signal
+import sys
 from datetime import UTC, datetime
 
 import trafilatura
 from prometheus_client import Counter, start_http_server
+from requests.exceptions import RequestException
 from warcio.archiveiterator import WARCIterator
 
 from commoncrawl_pipeline.commoncrawl import CCDownloader, Downloader
 from commoncrawl_pipeline.config import (
     CC_BASE_URL,
+    DOWNLOAD_MAX_RETRIES,
+    DOWNLOAD_RETRY_DELAY,
+    DOWNLOAD_TIMEOUT,
     MINIO_ACCESS_KEY,
     MINIO_BUCKET_NAME,
+    MINIO_BUFFER_SIZE_MB,
     MINIO_ENDPOINT,
     MINIO_SECRET_KEY,
     MINIO_SECURE,
@@ -56,67 +63,147 @@ upload_bytes_total = Counter(
 upload_errors = Counter(
     "worker_upload_errors", "Errors encountered while uploading to object store"
 )
+batch_item_download_errors = Counter(
+    "worker_batch_item_download_errors", "Batch items that failed to download"
+)
+batch_item_parse_errors = Counter(
+    "worker_batch_item_parse_errors", "Batch items with parse/decode errors"
+)
+batch_processing_errors = Counter(
+    "worker_batch_processing_errors", "Batches that failed processing entirely"
+)
 
 
 def process_batch(
     downloader: Downloader, object_store: ObjectStore, ch, method, _properties, body
 ):
-    print("Received batch of size", len(body))
-    batch = json.loads(body)
-    batch_items_total.inc(len(batch))
+    """Process a batch of items with error isolation.
+
+    Each item in the batch is processed independently. If one item fails,
+    we continue processing the rest. The batch is only ACKed if we successfully
+    process at least some items.
+    """
+    try:
+        print("Received batch of size", len(body))
+        batch = json.loads(body)
+        batch_items_total.inc(len(batch))
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f"ERROR: Failed to parse batch message: {e}")
+        batch_processing_errors.inc()
+        # NACK and requeue - message might be corrupted temporarily
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
+    items_processed = 0
+    items_failed = 0
 
     for item in batch:
-        data = downloader.download_and_unzip(
-            item["metadata"]["filename"],
-            int(item["metadata"]["offset"]),
-            int(item["metadata"]["length"]),
+        try:
+            # Download WARC chunk with retry logic
+            try:
+                data = downloader.download_and_unzip(
+                    item["metadata"]["filename"],
+                    int(item["metadata"]["offset"]),
+                    int(item["metadata"]["length"]),
+                )
+                download_bytes_total.inc(len(data))
+            except RequestException as e:
+                print(f"ERROR: Download failed for {item['metadata']['filename']}: {e}")
+                batch_item_download_errors.inc()
+                items_failed += 1
+                continue  # Skip this item, continue with next
+
+            # Process WARC records
+            try:
+                for record in WARCIterator(io.BytesIO(data)):
+                    warc_records_total.inc()
+                    if record.rec_type == "response":
+                        warc_records_response.inc()
+                        try:
+                            text = trafilatura.extract(record.content_stream().read())
+                            if text is not None:
+                                documents_extracted.inc()
+                                # Create document with metadata and extracted text
+                                document = {
+                                    "url": item["metadata"].get("url", ""),
+                                    "surt_url": item.get("surt_url", ""),
+                                    "timestamp": item.get("timestamp", ""),
+                                    "extracted_text": text,
+                                    "digest": item["metadata"].get("digest", ""),
+                                    "mime": item["metadata"].get("mime", ""),
+                                    "status": item["metadata"].get("status", ""),
+                                    "languages": item["metadata"].get("languages", ""),
+                                    "extraction_timestamp": datetime.now(
+                                        UTC
+                                    ).isoformat(),
+                                }
+                                try:
+                                    object_store.write_document(document)
+                                    documents_written.inc()
+                                    # Track approximate JSON size
+                                    upload_bytes_total.inc(len(json.dumps(document)))
+                                except Exception as e:
+                                    upload_errors.inc()
+                                    print(
+                                        f"ERROR: Failed to write document to object store: {e}"
+                                    )
+                                    # Continue processing other documents
+                            else:
+                                documents_extraction_failed.inc()
+                        except Exception as e:
+                            print(f"ERROR: Text extraction failed: {e}")
+                            documents_extraction_failed.inc()
+                            # Continue with next record
+                    else:
+                        warc_records_non_response.inc()
+            except Exception as e:
+                print(f"ERROR: WARC processing failed: {e}")
+                batch_item_parse_errors.inc()
+                items_failed += 1
+                continue
+
+            batch_items_processed.inc()
+            items_processed += 1
+
+        except Exception as e:
+            print(f"ERROR: Unexpected error processing batch item: {e}")
+            items_failed += 1
+            batch_item_parse_errors.inc()
+            # Continue with next item
+
+    # Flush object store buffer after processing all items
+    # If flush fails, NACK the batch so RabbitMQ can retry or send to DLQ
+    try:
+        object_store.flush()
+    except Exception as e:
+        print(f"ERROR: Failed to flush object store: {e}")
+        upload_errors.inc()
+        batch_processing_errors.inc()
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
+    # ACK the batch if we processed at least some items successfully
+    if items_processed > 0:
+        batch_counter.inc()
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print(
+            f"Batch processed: {items_processed} items succeeded, {items_failed} items failed"
         )
-        download_bytes_total.inc(len(data))
-
-        for record in WARCIterator(io.BytesIO(data)):
-            warc_records_total.inc()
-            if record.rec_type == "response":
-                warc_records_response.inc()
-                text = trafilatura.extract(record.content_stream().read())
-                if text is not None:
-                    documents_extracted.inc()
-                    # Create document with metadata and extracted text
-                    document = {
-                        "url": item["metadata"].get("url", ""),
-                        "surt_url": item.get("surt_url", ""),
-                        "timestamp": item.get("timestamp", ""),
-                        "extracted_text": text,
-                        "digest": item["metadata"].get("digest", ""),
-                        "mime": item["metadata"].get("mime", ""),
-                        "status": item["metadata"].get("status", ""),
-                        "languages": item["metadata"].get("languages", ""),
-                        "extraction_timestamp": datetime.now(UTC).isoformat(),
-                    }
-                    try:
-                        object_store.write_document(document)
-                        documents_written.inc()
-                        # Track approximate JSON size
-                        upload_bytes_total.inc(len(json.dumps(document)))
-                    except Exception as e:
-                        upload_errors.inc()
-                        print(f"Error writing document to object store: {e}")
-                else:
-                    documents_extraction_failed.inc()
-            else:
-                warc_records_non_response.inc()
-
-        batch_items_processed.inc()
-
-    # Flush object store buffer after each batch to ensure documents are written
-    object_store.flush()
-
-    batch_counter.inc()
-    ch.basic_ack(delivery_tag=method.delivery_tag)
+    else:
+        # All items failed - NACK without requeue (send to DLQ if configured)
+        print(f"Batch failed: All {items_failed} items failed processing")
+        batch_processing_errors.inc()
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
 def main() -> None:
     start_http_server(WORKER_METRICS_PORT)
-    downloader = CCDownloader(CC_BASE_URL)
+    downloader = CCDownloader(
+        CC_BASE_URL,
+        max_retries=DOWNLOAD_MAX_RETRIES,
+        retry_delay=DOWNLOAD_RETRY_DELAY,
+        timeout=DOWNLOAD_TIMEOUT,
+    )
 
     # Initialize object store
     object_store = MinIOObjectStore(
@@ -125,18 +212,50 @@ def main() -> None:
         secret_key=MINIO_SECRET_KEY,
         bucket_name=MINIO_BUCKET_NAME,
         secure=MINIO_SECURE,
+        buffer_size_mb=MINIO_BUFFER_SIZE_MB,
     )
     object_store.ensure_bucket_exists()
 
     channel = rabbitmq_channel()
     channel.basic_qos(prefetch_count=WORKER_PREFETCH_COUNT)
+
+    # Setup graceful shutdown handlers
+    def signal_handler(signum, frame):
+        print(f"\nReceived signal {signum}, shutting down gracefully...")
+        try:
+            # Flush any buffered documents
+            print("Flushing object store buffer...")
+            object_store.flush()
+            # Stop consuming new messages
+            print("Stopping message consumption...")
+            channel.stop_consuming()
+            # Close RabbitMQ connection
+            print("Closing RabbitMQ connection...")
+            if channel.connection and channel.connection.is_open:
+                channel.connection.close()
+            print("Graceful shutdown complete")
+        except Exception as e:
+            print(f"ERROR during shutdown: {e}")
+        finally:
+            sys.exit(0)
+
+    # Register signal handlers for SIGINT (Ctrl+C) and SIGTERM
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    print("Worker started. Press Ctrl+C to stop gracefully.")
     channel.basic_consume(
         queue=QUEUE_NAME,
         on_message_callback=lambda ch, method, properties, body: process_batch(
             downloader, object_store, ch, method, properties, body
         ),
     )
-    channel.start_consuming()
+
+    try:
+        channel.start_consuming()
+    except KeyboardInterrupt:
+        # This shouldn't be reached due to signal handler, but just in case
+        signal_handler(signal.SIGINT, None)
 
 
 if __name__ == "__main__":
