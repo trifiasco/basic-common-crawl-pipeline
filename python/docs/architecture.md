@@ -570,15 +570,3 @@ class ChannelSpy(MessageQueueChannel):
 - Implement circuit breakers for failed downloads
 
 ---
-
-## Error Handling Gaps
-
-The current implementation deliberately omits error handling for educational purposes:
-
-1. **No retry logic** for failed HTTP requests
-2. **No handling** of malformed CDX/WARC entries
-3. **No recovery** from RabbitMQ connection loss
-4. **No validation** of JSON metadata
-5. **No timeout** configuration for downloads
-
-These would be addressed in a production system.

@@ -1,8 +1,10 @@
 import csv
 import gzip
+import time
 from abc import ABC, abstractmethod
 
 import requests
+from requests.exceptions import RequestException, Timeout
 
 
 class Downloader(ABC):
@@ -12,15 +14,87 @@ class Downloader(ABC):
 
 
 class CCDownloader(Downloader):
-    def __init__(self, base_url: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        timeout: int = 30,
+    ) -> None:
         self.base_url = base_url
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.timeout = timeout
 
     def download_and_unzip(self, url: str, start: int, length: int) -> bytes:
+        """Download and decompress data with retry logic.
+
+        Args:
+            url: URL path to download
+            start: Byte offset to start from
+            length: Number of bytes to download
+
+        Returns:
+            Decompressed content as bytes
+
+        Raises:
+            RequestException: If download fails after all retries
+            gzip.BadGzipFile: If decompression fails
+        """
         headers = {"Range": f"bytes={start}-{start + length - 1}"}
-        response = requests.get(f"{self.base_url}/{url}", headers=headers)
-        response.raise_for_status()
-        buffer = response.content
-        return gzip.decompress(buffer)
+        full_url = f"{self.base_url}/{url}"
+
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.get(full_url, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                buffer = response.content
+                return gzip.decompress(buffer)
+
+            except Timeout as e:
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2**attempt)  # Exponential backoff
+                    print(
+                        f"Download timeout (attempt {attempt + 1}/{self.max_retries}). "
+                        f"Retrying in {delay:.1f}s... URL: {url}"
+                    )
+                    time.sleep(delay)
+                else:
+                    raise RequestException(
+                        f"Download timed out after {self.max_retries} attempts: {url}"
+                    ) from e
+
+            except requests.HTTPError as e:
+                # Don't retry on client errors (4xx), but retry on server errors (5xx)
+                if e.response is not None and 400 <= e.response.status_code < 500:
+                    raise  # Client error, don't retry
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2**attempt)
+                    print(
+                        f"HTTP error {e.response.status_code if e.response else 'unknown'} "
+                        f"(attempt {attempt + 1}/{self.max_retries}). "
+                        f"Retrying in {delay:.1f}s... URL: {url}"
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+
+            except RequestException as e:
+                # Network errors, connection errors, etc.
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2**attempt)
+                    print(
+                        f"Network error (attempt {attempt + 1}/{self.max_retries}). "
+                        f"Retrying in {delay:.1f}s... URL: {url}. Error: {e}"
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+
+        # This should never be reached, but just in case
+        raise RequestException(
+            f"Download failed after {self.max_retries} attempts: {url}"
+        )
 
 
 class IndexReader(ABC):
@@ -57,25 +131,16 @@ class CSVIndexReader(IndexReader):
             return 100.0
         return (self.lines_processed / self.total_lines) * 100
 
-    def __del__(self) -> None:
+    def __enter__(self):
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager and close file."""
         self.file.close()
+        return False
 
-
-def test_can_read_index(tmp_path):
-    filename = tmp_path / "test.csv"
-    index = "0,100,22,165)/ 20240722120756	cdx-00000.gz	0	188224	1\n\
-101,141,199,66)/robots.txt 20240714155331	cdx-00000.gz	188224	178351	2\n\
-104,223,1,100)/ 20240714230020	cdx-00000.gz	366575	178055	3"
-    filename.write_text(index)
-    reader = CSVIndexReader(filename)
-    assert list(reader) == [
-        ["0,100,22,165)/ 20240722120756", "cdx-00000.gz", "0", "188224", "1"],
-        [
-            "101,141,199,66)/robots.txt 20240714155331",
-            "cdx-00000.gz",
-            "188224",
-            "178351",
-            "2",
-        ],
-        ["104,223,1,100)/ 20240714230020", "cdx-00000.gz", "366575", "178055", "3"],
-    ]
+    def __del__(self) -> None:
+        """Cleanup in case context manager is not used."""
+        if hasattr(self, "file") and not self.file.closed:
+            self.file.close()

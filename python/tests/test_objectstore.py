@@ -182,3 +182,18 @@ def test_minio_object_store_flush_empty_buffer():
     store.flush()
 
     store.client.put_object.assert_not_called()
+
+
+def test_minio_object_store_custom_buffer_size():
+    """Test that custom buffer size is respected."""
+    store = MinIOObjectStore(
+        endpoint="localhost:9000",
+        access_key="testkey",
+        secret_key="testsecret",
+        bucket_name="test-bucket",
+        secure=False,
+        buffer_size_mb=10,
+    )
+
+    # Should be 10MB in bytes
+    assert store.max_buffer_size_bytes == 10 * 1024 * 1024

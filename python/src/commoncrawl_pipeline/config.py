@@ -42,3 +42,11 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "commoncrawl-documents")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+MINIO_BUFFER_SIZE_MB = int(os.getenv("MINIO_BUFFER_SIZE_MB", "5"))  # MB
+
+# Retry Configuration
+DOWNLOAD_MAX_RETRIES = int(os.getenv("DOWNLOAD_MAX_RETRIES", "3"))
+DOWNLOAD_RETRY_DELAY = float(os.getenv("DOWNLOAD_RETRY_DELAY", "1.0"))  # seconds
+DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "30"))  # seconds
+RABBITMQ_MAX_RETRIES = int(os.getenv("RABBITMQ_MAX_RETRIES", "5"))
+RABBITMQ_RETRY_DELAY = float(os.getenv("RABBITMQ_RETRY_DELAY", "2.0"))  # seconds
