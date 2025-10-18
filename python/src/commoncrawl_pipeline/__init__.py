@@ -11,4 +11,5 @@ __all__ = [
     "commoncrawl",
     "rabbitmq",
     "config",
+    "logging_config",
 ]

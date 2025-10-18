@@ -28,6 +28,7 @@ from commoncrawl_pipeline.config import (
     RABBITMQ_MAX_RETRIES,
     RABBITMQ_RETRY_DELAY,
 )
+from commoncrawl_pipeline.logging_config import setup_logging
 from commoncrawl_pipeline.rabbitmq import MessageQueueChannel, RabbitMQChannel
 
 logger = logging.getLogger(__name__)
@@ -267,10 +268,7 @@ def process_index(
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    setup_logging()
     start_http_server(BATCHER_METRICS_PORT)
 
     # Connection factory function for reconnection support
