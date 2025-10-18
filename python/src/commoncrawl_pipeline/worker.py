@@ -15,6 +15,22 @@ from commoncrawl_pipeline.config import (
 from commoncrawl_pipeline.rabbitmq import rabbitmq_channel
 
 batch_counter = Counter("worker_batches", "Number of consumed batches")
+warc_records_total = Counter(
+    "worker_warc_records_total", "Total WARC records processed"
+)
+warc_records_response = Counter(
+    "worker_warc_records_response", "WARC records that are responses"
+)
+warc_records_non_response = Counter(
+    "worker_warc_records_non_response", "WARC records filtered (not response type)"
+)
+documents_extracted = Counter(
+    "worker_documents_extracted", "Documents successfully extracted with trafilatura"
+)
+documents_extraction_failed = Counter(
+    "worker_documents_extraction_failed",
+    "Documents where trafilatura extraction returned None",
+)
 
 
 def process_batch(downloader: Downloader, ch, method, _properties, body):
@@ -27,9 +43,17 @@ def process_batch(downloader: Downloader, ch, method, _properties, body):
             int(item["metadata"]["length"]),
         )
         for record in WARCIterator(io.BytesIO(data)):
+            warc_records_total.inc()
             if record.rec_type == "response":
-                _text = trafilatura.extract(record.content_stream().read())
-                # TODO: process text
+                warc_records_response.inc()
+                text = trafilatura.extract(record.content_stream().read())
+                if text is not None:
+                    documents_extracted.inc()
+                    # TODO: process text
+                else:
+                    documents_extraction_failed.inc()
+            else:
+                warc_records_non_response.inc()
     batch_counter.inc()
     ch.basic_ack(delivery_tag=method.delivery_tag)
 

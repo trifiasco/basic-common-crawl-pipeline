@@ -28,17 +28,34 @@ class IndexReader(ABC):
     def __iter__(self):
         pass
 
+    @abstractmethod
+    def get_progress_percentage(self) -> float:
+        pass
+
 
 class CSVIndexReader(IndexReader):
     def __init__(self, filename: str) -> None:
+        self.filename = filename
         self.file = open(filename)
+        # Count total lines for progress tracking
+        self.total_lines = sum(1 for _ in self.file)
+        self.file.seek(0)  # Seek back to start
         self.reader = csv.reader(self.file, delimiter="\t")
+        self.lines_processed = 0
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        return next(self.reader)
+        row = next(self.reader)
+        self.lines_processed += 1
+        return row
+
+    def get_progress_percentage(self) -> float:
+        """Returns the percentage of file processed (0-100)"""
+        if self.total_lines == 0:
+            return 100.0
+        return (self.lines_processed / self.total_lines) * 100
 
     def __del__(self) -> None:
         self.file.close()
