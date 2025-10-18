@@ -6,9 +6,19 @@ from commoncrawl_pipeline.rabbitmq import MessageQueueChannel
 class FakeReader(IndexReader):
     def __init__(self, data):
         self.data = data
+        self.processed = 0
+        self.total = len(data)
 
     def __iter__(self):
-        return iter(self.data)
+        for item in self.data:
+            self.processed += 1
+            yield item
+
+    def get_progress_percentage(self) -> float:
+        """Returns the percentage of data processed (0-100)"""
+        if self.total == 0:
+            return 100.0
+        return (self.processed / self.total) * 100
 
 
 class FakeDownloader(Downloader):
