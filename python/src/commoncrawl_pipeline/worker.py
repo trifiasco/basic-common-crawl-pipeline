@@ -26,6 +26,7 @@ from commoncrawl_pipeline.config import (
     WORKER_METRICS_PORT,
     WORKER_PREFETCH_COUNT,
 )
+from commoncrawl_pipeline.logging_config import setup_logging
 from commoncrawl_pipeline.objectstore import MinIOObjectStore, ObjectStore
 from commoncrawl_pipeline.rabbitmq import rabbitmq_channel
 
@@ -206,10 +207,7 @@ def process_batch(
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    setup_logging()
     start_http_server(WORKER_METRICS_PORT)
     downloader = CCDownloader(
         CC_BASE_URL,

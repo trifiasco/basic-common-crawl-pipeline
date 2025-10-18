@@ -137,9 +137,11 @@ python/
 │   ├── commoncrawl.py          # Common Crawl utilities
 │   ├── rabbitmq.py             # RabbitMQ client
 │   ├── objectstore.py          # MinIO/S3 object storage
+│   ├── logging_config.py       # Logging configuration
 │   └── config.py               # Configuration loader
 ├── tests/                      # Test suite
 │   ├── test_batcher.py
+│   ├── test_commoncrawl.py
 │   └── test_objectstore.py
 ├── docs/                       # Documentation
 │   ├── setup.md
