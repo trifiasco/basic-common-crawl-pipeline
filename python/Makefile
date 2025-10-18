@@ -110,13 +110,15 @@ run-worker:
 
 # Docker compose - start services
 docker-up:
-	@echo "Starting Docker services (RabbitMQ + Prometheus)..."
+	@echo "Starting Docker services (RabbitMQ + Prometheus + MinIO)..."
 	docker compose up -d
 	@echo ""
 	@echo "✅ Services started!"
 	@echo "  - RabbitMQ Management UI: http://localhost:15672 (guest/guest)"
 	@echo "  - RabbitMQ AMQP: localhost:5672"
 	@echo "  - Prometheus: http://localhost:9090"
+	@echo "  - MinIO Console: http://localhost:9003 (minioadmin/minioadmin)"
+	@echo "  - MinIO API: localhost:9002"
 	@echo ""
 
 # Docker compose - stop services

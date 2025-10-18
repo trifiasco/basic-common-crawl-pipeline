@@ -35,3 +35,10 @@ WORKER_PREFETCH_COUNT = int(os.getenv("WORKER_PREFETCH_COUNT", "1"))
 
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Object Store Configuration (MinIO)
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9002")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "commoncrawl-documents")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"

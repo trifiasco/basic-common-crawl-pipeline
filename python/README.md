@@ -66,7 +66,13 @@ make run-worker
 ┌──────────────┐                         ┌──────────────┐
 │  CDX Files   │                         │  WARC Files  │
 │  (Metadata)  │                         │   (Content)  │
-└──────────────┘                         └──────────────┘
+└──────────────┘                         └──────┬───────┘
+                                                 │ Extracts text
+                                                 ▼
+                                          ┌──────────────┐
+                                          │    MinIO     │
+                                          │ (JSONL files)│
+                                          └──────────────┘
 ```
 
 **See [Architecture Documentation](docs/architecture.md) for details.**
@@ -81,6 +87,7 @@ make run-worker
 | **Testing** | pytest | Fast and flexible |
 | **Message Queue** | RabbitMQ | Reliable message delivery |
 | **Monitoring** | Prometheus | Time-series metrics |
+| **Object Storage** | MinIO | S3-compatible document storage |
 | **Orchestration** | Docker Compose | Simple multi-service setup |
 
 
@@ -108,12 +115,14 @@ make docker-logs    # View logs
 make clean          # Remove cache files
 ```
 
-## 📊 Monitoring
+## 📊 Monitoring & Access
 
 Once running, access:
 
 - **RabbitMQ UI**: http://localhost:15672 (guest/guest)
 - **Prometheus**: http://localhost:9090
+- **MinIO Console**: http://localhost:9003 (minioadmin/minioadmin)
+- **MinIO API**: http://localhost:9002
 - **Batcher Metrics**: http://localhost:9000/metrics
 - **Worker Metrics**: http://localhost:9001/metrics
 
@@ -126,16 +135,20 @@ python/
 │   ├── batcher.py              # Batcher implementation
 │   ├── worker.py               # Worker implementation
 │   ├── commoncrawl.py          # Common Crawl utilities
-│   └── rabbitmq.py             # RabbitMQ client
+│   ├── rabbitmq.py             # RabbitMQ client
+│   ├── objectstore.py          # MinIO/S3 object storage
+│   └── config.py               # Configuration loader
 ├── tests/                      # Test suite
-│   └── test_batcher.py
+│   ├── test_batcher.py
+│   └── test_objectstore.py
 ├── docs/                       # Documentation
 │   ├── setup.md
 │   ├── architecture.md
 │   └── development.md
 ├── pyproject.toml              # Project config & dependencies
 ├── Makefile                    # Development commands
-├── docker-compose.yml          # Service orchestration
+├── docker-compose.yml          # Service orchestration (RabbitMQ, Prometheus, MinIO)
+├── .env                        # Environment configuration
 └── .pre-commit-config.yaml     # Git hooks
 ```
 
@@ -165,11 +178,39 @@ Key settings:
 - `BATCH_SIZE`: URLs per batch (default: 50)
 - `BATCHER_METRICS_PORT`: Batcher metrics port (default: 9000)
 - `WORKER_METRICS_PORT`: Worker metrics port (default: 9001)
+- `MINIO_ENDPOINT`: MinIO endpoint (default: localhost:9002)
+- `MINIO_BUCKET_NAME`: Bucket for storing documents (default: commoncrawl-documents)
+
+### 🗄️ Object Storage (MinIO)
+
+Extracted documents are automatically stored in MinIO using **JSONL format** (JSON Lines). MinIO is included in the docker-compose setup and starts automatically with `make docker-up` or `make setup`.
+
+**Document Format:**
+Each line in the JSONL files contains a complete JSON document:
+```json
+{
+  "url": "http://example.com/page",
+  "surt_url": "com,example)/page",
+  "timestamp": "20240722120756",
+  "extracted_text": "The actual content...",
+  "digest": "DCNYNIFG5SBRCVS5PCUY4YY2UM2WAQ4R",
+  "mime": "text/html",
+  "status": "200",
+  "languages": "eng",
+  "extraction_timestamp": "2025-10-18T12:34:56Z"
+}
+```
+
+**Storage Details:**
+- Documents are buffered in memory (5MB buffer) before writing
+- Files are stored as `documents/YYYYMMDD_HHMMSS_microseconds.jsonl`
+- The bucket (`commoncrawl-documents`) is automatically created on first run
+- Access the MinIO Console at http://localhost:9003 to browse stored files
 
 ### How It Works
 
 - **Batcher**: Reads cluster.idx, downloads CDX file chunks, filters English + HTTP 200 URLs, publishes batches to RabbitMQ
-- **Worker**: Consumes batches, downloads WARC file chunks, extracts text with trafilatura
+- **Worker**: Consumes batches, downloads WARC file chunks, extracts text with trafilatura, stores documents to MinIO
 
 **See [Architecture Documentation](docs/architecture.md) for detailed flow.**
 
@@ -184,7 +225,7 @@ Key settings:
 ## 🔮 Future Enhancements
 
 - [ ] Text quality filtering
-- [ ] Output to object storage (S3/MinIO)
+- [x] Output to object storage (S3/MinIO) - **COMPLETED**
 - [ ] Tokenization with Huggingface transformers
 - [ ] Document length filtering
 - [ ] Multi-crawl support with deduplication
