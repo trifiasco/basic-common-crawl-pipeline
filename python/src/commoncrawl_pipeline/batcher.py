@@ -7,7 +7,7 @@ from typing import Any
 
 from pika import BasicProperties
 from pika.exceptions import AMQPConnectionError, AMQPError
-from prometheus_client import Counter, Gauge, start_http_server
+from prometheus_client import start_http_server
 from requests.exceptions import RequestException
 
 from commoncrawl_pipeline.commoncrawl import (
@@ -29,45 +29,24 @@ from commoncrawl_pipeline.config import (
     RABBITMQ_RETRY_DELAY,
 )
 from commoncrawl_pipeline.logging_config import setup_logging
+from commoncrawl_pipeline.metrics import (
+    batcher_batches,
+    batcher_cdx_chunks_processed,
+    batcher_cdx_chunks_total,
+    batcher_cdx_download_errors,
+    batcher_cdx_parse_errors,
+    batcher_cluster_idx_progress,
+    batcher_documents_accepted,
+    batcher_documents_empty_filtered,
+    batcher_documents_language_filtered,
+    batcher_documents_status_filtered,
+    batcher_documents_total,
+    batcher_json_parse_errors,
+    batcher_publish_errors,
+)
 from commoncrawl_pipeline.rabbitmq import MessageQueueChannel, RabbitMQChannel
 
 logger = logging.getLogger(__name__)
-
-batch_counter = Counter("batcher_batches", "Number of published batches")
-documents_total = Counter("batcher_documents_total", "Total documents processed")
-documents_empty_filtered = Counter(
-    "batcher_documents_empty_filtered", "Documents filtered due to empty lines"
-)
-documents_language_filtered = Counter(
-    "batcher_documents_language_filtered",
-    "Documents filtered due to non-English language",
-)
-documents_status_filtered = Counter(
-    "batcher_documents_status_filtered", "Documents filtered due to non-200 status"
-)
-documents_accepted = Counter(
-    "batcher_documents_accepted", "Documents accepted and published"
-)
-
-# Progress tracking metrics
-cluster_idx_progress = Gauge(
-    "batcher_cluster_idx_progress_percent",
-    "Percentage of cluster.idx file processed (0-100)",
-)
-cdx_chunks_processed = Counter(
-    "batcher_cdx_chunks_processed", "Number of CDX chunks processed from cluster.idx"
-)
-cdx_chunks_total = Gauge(
-    "batcher_cdx_chunks_total", "Total number of CDX chunks in cluster.idx"
-)
-
-# Error tracking metrics
-cdx_download_errors = Counter(
-    "batcher_cdx_download_errors", "CDX chunk download failures"
-)
-cdx_parse_errors = Counter("batcher_cdx_parse_errors", "CDX chunk parse/decode errors")
-json_parse_errors = Counter("batcher_json_parse_errors", "JSON metadata parse errors")
-publish_errors = Counter("batcher_publish_errors", "RabbitMQ publish failures")
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,19 +80,19 @@ def publish_batch(
             body=json.dumps(batch),
             properties=BasicProperties(delivery_mode=2),  # Make message persistent
         )
-        batch_counter.inc()
+        batcher_batches.inc()
         return True, False
     except AMQPConnectionError:
         logger.error("RabbitMQ connection lost while publishing batch", exc_info=True)
-        publish_errors.inc()
+        batcher_publish_errors.inc()
         return False, True  # Connection error - need to reconnect
     except AMQPError:
         logger.error("Failed to publish batch to RabbitMQ", exc_info=True)
-        publish_errors.inc()
+        batcher_publish_errors.inc()
         return False, False
     except Exception:
         logger.error("Unexpected error publishing batch", exc_info=True)
-        publish_errors.inc()
+        batcher_publish_errors.inc()
         return False, False
 
 
@@ -139,7 +118,7 @@ def process_index(
     channel = get_channel_func()
 
     for cdx_chunk in index:
-        cdx_chunks_processed.inc()
+        batcher_cdx_chunks_processed.inc()
 
         # Download CDX chunk with error handling
         try:
@@ -152,7 +131,7 @@ def process_index(
                 extra={"cdx_file": cdx_chunk[1]},
                 exc_info=True,
             )
-            cdx_download_errors.inc()
+            batcher_cdx_download_errors.inc()
             continue  # Skip this chunk, continue with next
 
         # Decode CDX data
@@ -164,16 +143,16 @@ def process_index(
                 extra={"cdx_file": cdx_chunk[1]},
                 exc_info=True,
             )
-            cdx_parse_errors.inc()
+            batcher_cdx_parse_errors.inc()
             continue
 
         # Process each line in the CDX chunk
         for line in decoded_data.split("\n"):
-            documents_total.inc()
+            batcher_documents_total.inc()
 
             # Skip empty lines
             if line == "":
-                documents_empty_filtered.inc()
+                batcher_documents_empty_filtered.inc()
                 continue
 
             # Parse CDX line
@@ -184,7 +163,7 @@ def process_index(
                         "Malformed CDX line (too few fields)",
                         extra={"line_preview": line[:100]},
                     )
-                    cdx_parse_errors.inc()
+                    batcher_cdx_parse_errors.inc()
                     continue
 
                 # Parse JSON metadata
@@ -196,7 +175,7 @@ def process_index(
                         extra={"line_preview": line[:100]},
                         exc_info=True,
                     )
-                    json_parse_errors.inc()
+                    batcher_json_parse_errors.inc()
                     continue
 
                 # Validate metadata structure
@@ -205,26 +184,26 @@ def process_index(
                         "Metadata is not a dict",
                         extra={"metadata_type": type(metadata).__name__},
                     )
-                    json_parse_errors.inc()
+                    batcher_json_parse_errors.inc()
                     continue
 
             except Exception:
                 logger.error("Unexpected error parsing CDX line", exc_info=True)
-                cdx_parse_errors.inc()
+                batcher_cdx_parse_errors.inc()
                 continue
 
             # Check language filter
             if "languages" not in metadata or "eng" not in metadata["languages"]:
-                documents_language_filtered.inc()
+                batcher_documents_language_filtered.inc()
                 continue
 
             # Check status filter
             if metadata.get("status") != "200":
-                documents_status_filtered.inc()
+                batcher_documents_status_filtered.inc()
                 continue
 
             # Document accepted
-            documents_accepted.inc()
+            batcher_documents_accepted.inc()
             found_urls.append(
                 {
                     "surt_url": values[0],
@@ -254,7 +233,7 @@ def process_index(
                     logger.warning("Batch publish failed, will retry with next batch")
 
         # Update progress after processing each CDX chunk
-        cluster_idx_progress.set(index.get_progress_percentage())
+        batcher_cluster_idx_progress.set(index.get_progress_percentage())
 
     # Publish remaining documents
     if len(found_urls) > 0:
@@ -308,7 +287,7 @@ def main() -> None:
 
     with CSVIndexReader(args.cluster_idx_filename) as index_reader:
         # Set total CDX chunks for progress tracking
-        cdx_chunks_total.set(index_reader.total_lines)
+        batcher_cdx_chunks_total.set(index_reader.total_lines)
         process_index(index_reader, get_rabbitmq_channel, downloader, BATCH_SIZE)
 
 
