@@ -5,8 +5,14 @@ import trafilatura
 from prometheus_client import Counter, start_http_server
 from warcio.archiveiterator import WARCIterator
 
-from commoncrawl_pipeline.commoncrawl import BASE_URL, CCDownloader, Downloader
-from commoncrawl_pipeline.rabbitmq import QUEUE_NAME, rabbitmq_channel
+from commoncrawl_pipeline.commoncrawl import CCDownloader, Downloader
+from commoncrawl_pipeline.config import (
+    CC_BASE_URL,
+    QUEUE_NAME,
+    WORKER_METRICS_PORT,
+    WORKER_PREFETCH_COUNT,
+)
+from commoncrawl_pipeline.rabbitmq import rabbitmq_channel
 
 batch_counter = Counter("worker_batches", "Number of consumed batches")
 
@@ -29,10 +35,10 @@ def process_batch(downloader: Downloader, ch, method, _properties, body):
 
 
 def main() -> None:
-    start_http_server(9001)
-    downloader = CCDownloader(BASE_URL)
+    start_http_server(WORKER_METRICS_PORT)
+    downloader = CCDownloader(CC_BASE_URL)
     channel = rabbitmq_channel()
-    channel.basic_qos(prefetch_count=1)
+    channel.basic_qos(prefetch_count=WORKER_PREFETCH_COUNT)
     channel.basic_consume(
         queue=QUEUE_NAME,
         on_message_callback=lambda ch, method, properties, body: process_batch(

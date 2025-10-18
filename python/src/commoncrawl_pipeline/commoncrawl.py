@@ -4,9 +4,6 @@ from abc import ABC, abstractmethod
 
 import requests
 
-CRAWL_PATH = "cc-index/collections/CC-MAIN-2024-30/indexes"
-BASE_URL = "https://data.commoncrawl.org"
-
 
 class Downloader(ABC):
     @abstractmethod

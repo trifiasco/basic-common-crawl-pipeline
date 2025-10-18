@@ -6,20 +6,19 @@ from typing import Any
 from prometheus_client import Counter, start_http_server
 
 from commoncrawl_pipeline.commoncrawl import (
-    BASE_URL,
-    CRAWL_PATH,
     CCDownloader,
     CSVIndexReader,
     Downloader,
     IndexReader,
 )
-from commoncrawl_pipeline.rabbitmq import (
+from commoncrawl_pipeline.config import (
+    BATCH_SIZE,
+    BATCHER_METRICS_PORT,
+    CC_BASE_URL,
+    CC_CRAWL_PATH,
     QUEUE_NAME,
-    MessageQueueChannel,
-    RabbitMQChannel,
 )
-
-BATCH_SIZE = 50
+from commoncrawl_pipeline.rabbitmq import MessageQueueChannel, RabbitMQChannel
 
 batch_counter = Counter("batcher_batches", "Number of published batches")
 
@@ -83,9 +82,10 @@ def process_index(
 
 def main() -> None:
     args = parse_args()
-    start_http_server(9000)
+    start_http_server(BATCHER_METRICS_PORT)
     channel = RabbitMQChannel()
-    downloader = CCDownloader(f"{BASE_URL}/{CRAWL_PATH}")
+    # Batcher downloads CDX index files from the indexes directory
+    downloader = CCDownloader(f"{CC_BASE_URL}/{CC_CRAWL_PATH}")
     index_reader = CSVIndexReader(args.cluster_idx_filename)
     process_index(index_reader, channel, downloader, BATCH_SIZE)
 

@@ -1,9 +1,8 @@
-import os
 from abc import ABC, abstractmethod
 
 import pika
 
-QUEUE_NAME = "batches"
+from commoncrawl_pipeline.config import QUEUE_NAME, RABBITMQ_CONNECTION_STRING
 
 
 class MessageQueueChannel(ABC):
@@ -25,9 +24,7 @@ class RabbitMQChannel(MessageQueueChannel):
 
 
 def rabbitmq_channel() -> pika.adapters.blocking_connection.BlockingChannel:
-    connection = pika.BlockingConnection(
-        pika.URLParameters(os.environ["RABBITMQ_CONNECTION_STRING"])
-    )
+    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_CONNECTION_STRING))
     channel = connection.channel()
     channel.queue_declare(queue=QUEUE_NAME)
     return channel
