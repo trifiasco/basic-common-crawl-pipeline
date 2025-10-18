@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -28,6 +29,8 @@ from commoncrawl_pipeline.config import (
     RABBITMQ_RETRY_DELAY,
 )
 from commoncrawl_pipeline.rabbitmq import MessageQueueChannel, RabbitMQChannel
+
+logger = logging.getLogger(__name__)
 
 batch_counter = Counter("batcher_batches", "Number of published batches")
 documents_total = Counter("batcher_documents_total", "Total documents processed")
@@ -90,7 +93,7 @@ def publish_batch(
         - is_connection_error: True if error was due to connection failure
     """
     try:
-        print("Pushing batch of size", len(batch))
+        logger.info("Publishing batch", extra={"batch_size": len(batch)})
         channel.basic_publish(
             exchange="",
             routing_key=QUEUE_NAME,
@@ -99,16 +102,16 @@ def publish_batch(
         )
         batch_counter.inc()
         return True, False
-    except AMQPConnectionError as e:
-        print(f"ERROR: RabbitMQ connection lost while publishing batch: {e}")
+    except AMQPConnectionError:
+        logger.error("RabbitMQ connection lost while publishing batch", exc_info=True)
         publish_errors.inc()
         return False, True  # Connection error - need to reconnect
-    except AMQPError as e:
-        print(f"ERROR: Failed to publish batch to RabbitMQ: {e}")
+    except AMQPError:
+        logger.error("Failed to publish batch to RabbitMQ", exc_info=True)
         publish_errors.inc()
         return False, False
-    except Exception as e:
-        print(f"ERROR: Unexpected error publishing batch: {e}")
+    except Exception:
+        logger.error("Unexpected error publishing batch", exc_info=True)
         publish_errors.inc()
         return False, False
 
@@ -142,16 +145,24 @@ def process_index(
             data = downloader.download_and_unzip(
                 cdx_chunk[1], int(cdx_chunk[2]), int(cdx_chunk[3])
             )
-        except RequestException as e:
-            print(f"ERROR: Failed to download CDX chunk {cdx_chunk[1]}: {e}")
+        except RequestException:
+            logger.error(
+                "Failed to download CDX chunk",
+                extra={"cdx_file": cdx_chunk[1]},
+                exc_info=True,
+            )
             cdx_download_errors.inc()
             continue  # Skip this chunk, continue with next
 
         # Decode CDX data
         try:
             decoded_data = data.decode("utf-8")
-        except UnicodeDecodeError as e:
-            print(f"ERROR: Failed to decode CDX chunk {cdx_chunk[1]}: {e}")
+        except UnicodeDecodeError:
+            logger.error(
+                "Failed to decode CDX chunk",
+                extra={"cdx_file": cdx_chunk[1]},
+                exc_info=True,
+            )
             cdx_parse_errors.inc()
             continue
 
@@ -168,28 +179,36 @@ def process_index(
             try:
                 values = line.split(" ")
                 if len(values) < 3:
-                    print(f"ERROR: Malformed CDX line (too few fields): {line[:100]}")
+                    logger.warning(
+                        "Malformed CDX line (too few fields)",
+                        extra={"line_preview": line[:100]},
+                    )
                     cdx_parse_errors.inc()
                     continue
 
                 # Parse JSON metadata
                 try:
                     metadata = json.loads("".join(values[2:]))
-                except json.JSONDecodeError as e:
-                    print(
-                        f"ERROR: Failed to parse JSON metadata: {e}. Line: {line[:100]}"
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Failed to parse JSON metadata",
+                        extra={"line_preview": line[:100]},
+                        exc_info=True,
                     )
                     json_parse_errors.inc()
                     continue
 
                 # Validate metadata structure
                 if not isinstance(metadata, dict):
-                    print(f"ERROR: Metadata is not a dict: {type(metadata)}")
+                    logger.warning(
+                        "Metadata is not a dict",
+                        extra={"metadata_type": type(metadata).__name__},
+                    )
                     json_parse_errors.inc()
                     continue
 
-            except Exception as e:
-                print(f"ERROR: Unexpected error parsing CDX line: {e}")
+            except Exception:
+                logger.error("Unexpected error parsing CDX line", exc_info=True)
                 cdx_parse_errors.inc()
                 continue
 
@@ -220,18 +239,18 @@ def process_index(
                     found_urls = []
                 elif is_conn_error:
                     # Reconnect to RabbitMQ and retry
-                    print("WARNING: RabbitMQ connection lost, reconnecting...")
+                    logger.warning("RabbitMQ connection lost, reconnecting...")
                     channel = get_channel_func()
                     success, _ = publish_batch(channel, found_urls)
                     if success:
                         found_urls = []
                     else:
-                        print(
-                            "WARNING: Batch publish failed after reconnect, will retry with next batch"
+                        logger.warning(
+                            "Batch publish failed after reconnect, will retry with next batch"
                         )
                 else:
                     # Non-connection error, keep accumulating
-                    print("WARNING: Batch publish failed, will retry with next batch")
+                    logger.warning("Batch publish failed, will retry with next batch")
 
         # Update progress after processing each CDX chunk
         cluster_idx_progress.set(index.get_progress_percentage())
@@ -241,13 +260,17 @@ def process_index(
         success, is_conn_error = publish_batch(channel, found_urls)
         if not success and is_conn_error:
             # Reconnect and retry final batch
-            print("WARNING: RabbitMQ connection lost, reconnecting for final batch...")
+            logger.warning("RabbitMQ connection lost, reconnecting for final batch...")
             channel = get_channel_func()
             publish_batch(channel, found_urls)
 
 
 def main() -> None:
     args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     start_http_server(BATCHER_METRICS_PORT)
 
     # Connection factory function for reconnection support
@@ -259,9 +282,14 @@ def main() -> None:
             except AMQPConnectionError as e:
                 if attempt < RABBITMQ_MAX_RETRIES - 1:
                     delay = RABBITMQ_RETRY_DELAY * (2**attempt)
-                    print(
-                        f"Failed to connect to RabbitMQ (attempt {attempt + 1}/{RABBITMQ_MAX_RETRIES}). "
-                        f"Retrying in {delay:.1f}s... Error: {e}"
+                    logger.warning(
+                        "Failed to connect to RabbitMQ, retrying...",
+                        extra={
+                            "attempt": attempt + 1,
+                            "max_retries": RABBITMQ_MAX_RETRIES,
+                            "retry_delay": delay,
+                        },
+                        exc_info=True,
                     )
                     time.sleep(delay)
                 else:

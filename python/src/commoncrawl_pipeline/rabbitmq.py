@@ -1,3 +1,4 @@
+import logging
 import time
 from abc import ABC, abstractmethod
 
@@ -10,6 +11,8 @@ from commoncrawl_pipeline.config import (
     RABBITMQ_MAX_RETRIES,
     RABBITMQ_RETRY_DELAY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MessageQueueChannel(ABC):
@@ -66,15 +69,20 @@ def rabbitmq_channel(
             )
             channel = connection.channel()
             channel.queue_declare(queue=QUEUE_NAME, durable=True)
-            print("Connected to RabbitMQ")
+            logger.info("Connected to RabbitMQ")
             return channel
 
         except AMQPConnectionError as e:
             if attempt < max_retries - 1:
                 delay = retry_delay * (2**attempt)  # Exponential backoff
-                print(
-                    f"RabbitMQ connection failed (attempt {attempt + 1}/{max_retries}). "
-                    f"Retrying in {delay:.1f}s... Error: {e}"
+                logger.warning(
+                    "RabbitMQ connection failed, retrying...",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": max_retries,
+                        "retry_delay": delay,
+                    },
+                    exc_info=True,
                 )
                 time.sleep(delay)
             else:
