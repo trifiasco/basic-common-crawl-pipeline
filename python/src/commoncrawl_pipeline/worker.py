@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import signal
 import sys
 from datetime import UTC, datetime
@@ -27,6 +28,8 @@ from commoncrawl_pipeline.config import (
 )
 from commoncrawl_pipeline.objectstore import MinIOObjectStore, ObjectStore
 from commoncrawl_pipeline.rabbitmq import rabbitmq_channel
+
+logger = logging.getLogger(__name__)
 
 batch_counter = Counter("worker_batches", "Number of consumed batches")
 batch_items_total = Counter(
@@ -84,11 +87,11 @@ def process_batch(
     process at least some items.
     """
     try:
-        print("Received batch of size", len(body))
+        logger.info("Received batch", extra={"batch_size": len(body)})
         batch = json.loads(body)
         batch_items_total.inc(len(batch))
-    except (json.JSONDecodeError, TypeError) as e:
-        print(f"ERROR: Failed to parse batch message: {e}")
+    except (json.JSONDecodeError, TypeError):
+        logger.error("Failed to parse batch message", exc_info=True)
         batch_processing_errors.inc()
         # NACK and requeue - message might be corrupted temporarily
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -107,8 +110,12 @@ def process_batch(
                     int(item["metadata"]["length"]),
                 )
                 download_bytes_total.inc(len(data))
-            except RequestException as e:
-                print(f"ERROR: Download failed for {item['metadata']['filename']}: {e}")
+            except RequestException:
+                logger.error(
+                    "Download failed for WARC chunk",
+                    extra={"filename": item["metadata"]["filename"]},
+                    exc_info=True,
+                )
                 batch_item_download_errors.inc()
                 items_failed += 1
                 continue  # Skip this item, continue with next
@@ -142,22 +149,23 @@ def process_batch(
                                     documents_written.inc()
                                     # Track approximate JSON size
                                     upload_bytes_total.inc(len(json.dumps(document)))
-                                except Exception as e:
+                                except Exception:
                                     upload_errors.inc()
-                                    print(
-                                        f"ERROR: Failed to write document to object store: {e}"
+                                    logger.error(
+                                        "Failed to write document to object store",
+                                        exc_info=True,
                                     )
                                     # Continue processing other documents
                             else:
                                 documents_extraction_failed.inc()
-                        except Exception as e:
-                            print(f"ERROR: Text extraction failed: {e}")
+                        except Exception:
+                            logger.error("Text extraction failed", exc_info=True)
                             documents_extraction_failed.inc()
                             # Continue with next record
                     else:
                         warc_records_non_response.inc()
-            except Exception as e:
-                print(f"ERROR: WARC processing failed: {e}")
+            except Exception:
+                logger.error("WARC processing failed", exc_info=True)
                 batch_item_parse_errors.inc()
                 items_failed += 1
                 continue
@@ -165,8 +173,8 @@ def process_batch(
             batch_items_processed.inc()
             items_processed += 1
 
-        except Exception as e:
-            print(f"ERROR: Unexpected error processing batch item: {e}")
+        except Exception:
+            logger.error("Unexpected error processing batch item", exc_info=True)
             items_failed += 1
             batch_item_parse_errors.inc()
             # Continue with next item
@@ -175,8 +183,8 @@ def process_batch(
     # If flush fails, NACK the batch so RabbitMQ can retry or send to DLQ
     try:
         object_store.flush()
-    except Exception as e:
-        print(f"ERROR: Failed to flush object store: {e}")
+    except Exception:
+        logger.error("Failed to flush object store", exc_info=True)
         upload_errors.inc()
         batch_processing_errors.inc()
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -186,17 +194,22 @@ def process_batch(
     if items_processed > 0:
         batch_counter.inc()
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(
-            f"Batch processed: {items_processed} items succeeded, {items_failed} items failed"
+        logger.info(
+            "Batch processed",
+            extra={"items_succeeded": items_processed, "items_failed": items_failed},
         )
     else:
         # All items failed - NACK without requeue (send to DLQ if configured)
-        print(f"Batch failed: All {items_failed} items failed processing")
+        logger.warning("Batch failed completely", extra={"items_failed": items_failed})
         batch_processing_errors.inc()
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     start_http_server(WORKER_METRICS_PORT)
     downloader = CCDownloader(
         CC_BASE_URL,
@@ -221,21 +234,23 @@ def main() -> None:
 
     # Setup graceful shutdown handlers
     def signal_handler(signum, frame):
-        print(f"\nReceived signal {signum}, shutting down gracefully...")
+        logger.info(
+            "Received signal, shutting down gracefully...", extra={"signal": signum}
+        )
         try:
             # Flush any buffered documents
-            print("Flushing object store buffer...")
+            logger.info("Flushing object store buffer...")
             object_store.flush()
             # Stop consuming new messages
-            print("Stopping message consumption...")
+            logger.info("Stopping message consumption...")
             channel.stop_consuming()
             # Close RabbitMQ connection
-            print("Closing RabbitMQ connection...")
+            logger.info("Closing RabbitMQ connection...")
             if channel.connection and channel.connection.is_open:
                 channel.connection.close()
-            print("Graceful shutdown complete")
-        except Exception as e:
-            print(f"ERROR during shutdown: {e}")
+            logger.info("Graceful shutdown complete")
+        except Exception:
+            logger.error("Error during shutdown", exc_info=True)
         finally:
             sys.exit(0)
 
@@ -243,7 +258,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    print("Worker started. Press Ctrl+C to stop gracefully.")
+    logger.info("Worker started. Press Ctrl+C to stop gracefully.")
     channel.basic_consume(
         queue=QUEUE_NAME,
         on_message_callback=lambda ch, method, properties, body: process_batch(

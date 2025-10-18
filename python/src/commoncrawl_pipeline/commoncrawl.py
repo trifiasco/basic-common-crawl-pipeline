@@ -1,10 +1,13 @@
 import csv
 import gzip
+import logging
 import time
 from abc import ABC, abstractmethod
 
 import requests
 from requests.exceptions import RequestException, Timeout
+
+logger = logging.getLogger(__name__)
 
 
 class Downloader(ABC):
@@ -54,9 +57,14 @@ class CCDownloader(Downloader):
             except Timeout as e:
                 if attempt < self.max_retries - 1:
                     delay = self.retry_delay * (2**attempt)  # Exponential backoff
-                    print(
-                        f"Download timeout (attempt {attempt + 1}/{self.max_retries}). "
-                        f"Retrying in {delay:.1f}s... URL: {url}"
+                    logger.warning(
+                        "Download timeout, retrying...",
+                        extra={
+                            "url": url,
+                            "attempt": attempt + 1,
+                            "max_retries": self.max_retries,
+                            "retry_delay": delay,
+                        },
                     )
                     time.sleep(delay)
                 else:
@@ -70,22 +78,36 @@ class CCDownloader(Downloader):
                     raise  # Client error, don't retry
                 if attempt < self.max_retries - 1:
                     delay = self.retry_delay * (2**attempt)
-                    print(
-                        f"HTTP error {e.response.status_code if e.response else 'unknown'} "
-                        f"(attempt {attempt + 1}/{self.max_retries}). "
-                        f"Retrying in {delay:.1f}s... URL: {url}"
+                    logger.warning(
+                        "HTTP error, retrying...",
+                        extra={
+                            "url": url,
+                            "status_code": e.response.status_code
+                            if e.response
+                            else "unknown",
+                            "attempt": attempt + 1,
+                            "max_retries": self.max_retries,
+                            "retry_delay": delay,
+                        },
+                        exc_info=True,
                     )
                     time.sleep(delay)
                 else:
                     raise
 
-            except RequestException as e:
+            except RequestException:
                 # Network errors, connection errors, etc.
                 if attempt < self.max_retries - 1:
                     delay = self.retry_delay * (2**attempt)
-                    print(
-                        f"Network error (attempt {attempt + 1}/{self.max_retries}). "
-                        f"Retrying in {delay:.1f}s... URL: {url}. Error: {e}"
+                    logger.warning(
+                        "Network error, retrying...",
+                        extra={
+                            "url": url,
+                            "attempt": attempt + 1,
+                            "max_retries": self.max_retries,
+                            "retry_delay": delay,
+                        },
+                        exc_info=True,
                     )
                     time.sleep(delay)
                 else:
