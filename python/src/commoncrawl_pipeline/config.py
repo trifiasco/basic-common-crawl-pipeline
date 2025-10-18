@@ -1,0 +1,37 @@
+"""Configuration module for Common Crawl Pipeline.
+
+Loads environment variables from .env file using python-dotenv.
+"""
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env file from the python directory (parent of src)
+env_path = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+
+# RabbitMQ Configuration
+RABBITMQ_CONNECTION_STRING = os.getenv(
+    "RABBITMQ_CONNECTION_STRING", "amqp://guest:guest@localhost:5672"
+)
+QUEUE_NAME = os.getenv("RABBITMQ_QUEUE_NAME", "batches")
+
+# Prometheus Metrics Ports
+BATCHER_METRICS_PORT = int(os.getenv("BATCHER_METRICS_PORT", "9000"))
+WORKER_METRICS_PORT = int(os.getenv("WORKER_METRICS_PORT", "9001"))
+
+# Common Crawl Configuration
+CC_BASE_URL = os.getenv("CC_BASE_URL", "https://data.commoncrawl.org")
+CC_CRAWL_PATH = os.getenv(
+    "CC_CRAWL_PATH", "cc-index/collections/CC-MAIN-2024-30/indexes"
+)
+
+# Processing Configuration
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
+WORKER_PREFETCH_COUNT = int(os.getenv("WORKER_PREFETCH_COUNT", "1"))
+
+# Logging Configuration
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
