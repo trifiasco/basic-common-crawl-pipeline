@@ -137,6 +137,7 @@ python/
 │   ├── commoncrawl.py          # Common Crawl utilities
 │   ├── rabbitmq.py             # RabbitMQ client
 │   ├── objectstore.py          # MinIO/S3 object storage
+│   ├── metrics.py              # Prometheus metrics definitions
 │   ├── logging_config.py       # Logging configuration
 │   └── config.py               # Configuration loader
 ├── tests/                      # Test suite
